@@ -1,0 +1,70 @@
+# フォーム営業リサーチを定期実行する GitHub Actions ワークフロー
+#
+# このファイルが「毎朝9時に自動で動く」の正体です。
+# GitHub がこのファイルを読んで、決まった時刻にツールを実行します。
+
+name: フォーム営業リサーチ
+
+# いつ動かすか
+on:
+  # スケジュール実行（cron 形式）
+  # GitHub Actions の時刻は UTC（世界標準時）。日本時間より9時間遅い。
+  # 下の "0 0 * * *" は UTC 0時 = 日本時間 朝9時 を意味する。
+  schedule:
+    - cron: "0 0 * * *"
+  # 手動でも実行できるようにする（GitHubの画面のボタンから動かせる）
+  workflow_dispatch:
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    # 1回の実行は最大60分で打ち切る（無料枠の使いすぎ防止）
+    timeout-minutes: 60
+
+    steps:
+      # 1. リポジトリのコードを取り込む
+      - name: コードを取得
+        uses: actions/checkout@v4
+
+      # 2. Python を準備する
+      - name: Python をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 3. 必要なライブラリをインストールする
+      - name: ライブラリをインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # 4. 秘密の鍵（サービスアカウントJSON）をファイルとして書き出す
+      #    GitHub の Secrets に登録した内容を、実行中だけファイルにする。
+      - name: サービスアカウントJSONを準備
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > service-account.json
+
+      # 5. ツールを実行する
+      #    APIキーやシートIDは Secrets から環境変数として渡す。
+      - name: リサーチを実行
+        env:
+          SEARCH_PROVIDER: serpapi
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ./service-account.json
+        run: |
+          python -m src.main --config config.yaml
+
+      # 6. 実行結果のCSVを成果物として保存する（GitHubの画面からダウンロード可能）
+      - name: 結果CSVを保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prospects-csv
+          path: output/prospects.csv
+          if-no-files-found: ignore
+
+      # 7. 後始末：秘密の鍵ファイルを消す
+      - name: 鍵ファイルを削除
+        if: always()
+        run: rm -f service-account.json
