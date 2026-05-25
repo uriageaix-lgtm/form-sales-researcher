@@ -1,0 +1,107 @@
+# フォーム営業リサーチ自動化ツール 設定ファイル
+# このファイルを config.yaml にコピーして使ってください。
+
+targets:
+  # 検索対象の都道府県
+  prefectures:
+    - 東京都
+    - 神奈川県
+    - 埼玉県
+    - 千葉県
+  # 検索対象の業種（建設設備工事 / リフォーム / 工務店 / 卸売業）
+  industries:
+    - 建設設備工事
+    - リフォーム
+    - 工務店
+    - 卸売業
+  # 1検索クエリあたり取得する件数
+  limit_per_query: 10
+  # 1回の実行で扱う企業数の上限
+  max_total_results: 200
+  # サイトの所在地が指定した都道府県と一致する企業だけを残すか。
+  # true なら、他県の企業は対象外として除外タブに記録される。
+  # 所在地が読み取れない企業は notes に印を付けて残す。
+  filter_by_prefecture: true
+
+search:
+  # 検索プロバイダ（.env の SEARCH_PROVIDER が優先される）
+  provider: serpapi
+  timeout_seconds: 20
+  # 検索結果から除外するドメイン（ポータル・求人・SNS・地図など）
+  excluded_domains:
+    - google.com
+    - yahoo.co.jp
+    - map.yahoo.co.jp
+    - facebook.com
+    - instagram.com
+    - x.com
+    - twitter.com
+    - indeed.com
+    - townwork.net
+    - wantedly.com
+    - job-medley.com
+    - hellowork.mhlw.go.jp
+    - youtube.com
+    - amazon.co.jp
+    - rakuten.co.jp
+    # --- 重いポータル・電話帳・地図・まとめサイト（調査に時間がかかり営業先にならない）---
+    - itp.ne.jp
+    - mapion.co.jp
+    - navitime.co.jp
+    - ekiten.jp
+    - its-mo.com
+    - goo.ne.jp
+    - jpnumber.com
+    - i-town.jp
+    - baseconnect.in
+    - houjin.jp
+    - alarmbox.jp
+    - nikkei.com
+    - mynavi.jp
+    - en-japan.com
+    - doda.jp
+    - baitoru.com
+    - weblio.jp
+    - wikipedia.org
+    - tabelog.com
+    - hotpepper.jp
+    - ameblo.jp
+    - fc2.com
+    - hatenablog.com
+    - note.com
+    - linkedin.com
+    - prtimes.jp
+
+crawl:
+  # 1サイトあたりにクロールする最大ページ数
+  max_pages_per_site: 8
+  timeout_seconds: 15
+  user_agent: "FormSalesResearchBot/1.0 (+contact: your-email@example.com)"
+  # robots.txt を尊重する（true 推奨）
+  respect_robots_txt: true
+  # リクエスト間に空ける秒数（サイトへの負荷を抑える）
+  sleep_seconds_between_requests: 1.5
+
+sheets:
+  # スプレッドシートID（.env の GOOGLE_SHEET_ID が優先される。空でよい）
+  spreadsheet_id: ""
+  prospects_sheet: Prospects
+  run_log_sheet: Run_Log
+  search_queries_sheet: Search_Queries
+  exclusions_sheet: Exclusions
+  config_sheet: Config
+
+scoring:
+  # LLMでスコアリングするか。初期は false（ルールベース）で運用。
+  use_llm: false
+  # この点数未満の企業はスプレッドシートに保存しない
+  min_score_to_save: 50
+  # 最優先とみなすスコアの閾値
+  high_priority_score: 80
+
+output:
+  # ローカルにもCSVを保存するか
+  save_local_csv: true
+  local_csv_path: ./output/prospects.csv
+  # 実行ログファイルの保存先
+  log_path: ./output/run.log
