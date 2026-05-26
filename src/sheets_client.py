@@ -1,172 +1,208 @@
-"""Google Sheets への保存。
+"""検索クライアント。
 
-サービスアカウント認証で対象スプレッドシートに接続し、
-Prospects / Run_Log / Search_Queries / Exclusions / Config の各タブへ書き込む。
+役割は3つ:
+1. 業種×地域から検索クエリを自動生成する
+2. 検索API（SerpAPI）を呼んで企業サイト候補を取得する
+3. 検索APIの代わりに、手元の企業リストCSVを入力として読み込む
 
-Prospects への書き込みは冪等（upsert）。prospect_id または website_url が
-一致する行があれば更新し、無ければ追記する。
+Google検索結果ページの直接スクレイピングは行わない。必ず検索APIかCSVを使う。
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import csv
+import time
+from pathlib import Path
 
-import gspread
-from google.oauth2.service_account import Credentials
+import requests
 
 from .logging_utils import get_logger
-from .models import (
-    PROSPECT_HEADERS, RUN_LOG_HEADERS, SEARCH_QUERY_HEADERS,
-    EXCLUSION_HEADERS, Prospect, RunStats,
-)
+from .models import SearchResult
 
-_SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
+# 業種グループ -> 細かい業種（sub_industry）のキーワード一覧
+INDUSTRY_KEYWORDS: dict[str, list[str]] = {
+    "建設設備工事": [
+        "電気工事", "空調設備", "給排水設備", "消防設備",
+        "通信工事", "設備工事", "管工事",
+    ],
+    "リフォーム": [
+        "住宅リフォーム", "外壁塗装", "防水工事",
+        "内装工事", "屋根工事", "リノベーション",
+    ],
+    "工務店": [
+        "注文住宅", "地域工務店", "住宅建築", "木造住宅", "住宅施工",
+    ],
+    "卸売業": [
+        "建材卸", "住宅設備卸", "機械工具卸", "食品卸", "業務用食品卸",
+        "日用品卸", "包装資材卸", "電材卸", "管材卸",
+    ],
+}
+
+# クエリの語尾パターン（問い合わせ導線を持つ企業に当たりやすくする）
+QUERY_SUFFIXES = ["会社 問い合わせ", "工事 会社 お問い合わせ", "会社 お問い合わせ"]
 
 
-class SheetsClient:
-    """Googleスプレッドシートへの読み書きを担当する。"""
+def generate_queries(industries: list[str], prefectures: list[str]) -> list[dict]:
+    """業種×地域から検索クエリを生成する。
 
-    def __init__(self, service_account_json: str, spreadsheet_id: str, sheet_names: dict):
+    Returns:
+        各要素が {industry_group, sub_industry, prefecture, query} の辞書。
+    """
+    queries: list[dict] = []
+    for industry in industries:
+        keywords = INDUSTRY_KEYWORDS.get(industry, [industry])
+        for prefecture in prefectures:
+            for keyword in keywords:
+                query = f"{prefecture} {keyword} 会社 問い合わせ"
+                queries.append({
+                    "industry_group": industry,
+                    "sub_industry": keyword,
+                    "prefecture": prefecture,
+                    "query": query,
+                })
+    return queries
+
+
+class SearchClient:
+    """検索APIのラッパー。現状は SerpAPI を実装。
+
+    別プロバイダ（Google CSE / Bing / Tavily）は同じ search() を実装すれば
+    差し替えられる構造にしている。
+    """
+
+    def __init__(self, provider: str, api_keys: dict, timeout: int = 20):
+        self.provider = provider
+        self.api_keys = api_keys
+        self.timeout = timeout
         self.log = get_logger()
-        self.spreadsheet_id = spreadsheet_id
-        self.sheet_names = sheet_names
 
-        creds = Credentials.from_service_account_file(
-            service_account_json, scopes=_SCOPES
+    def search(self, query: str, limit: int) -> list[SearchResult]:
+        """1クエリ分の検索を実行する。"""
+        if self.provider == "serpapi":
+            return self._search_serpapi(query, limit)
+        # 将来の拡張ポイント。未実装プロバイダは明示的にエラーにする。
+        raise NotImplementedError(
+            f"検索プロバイダ '{self.provider}' は未対応です。"
+            f"現在は 'serpapi' のみ利用できます。"
         )
-        self.client = gspread.authorize(creds)
-        self.spreadsheet = self.client.open_by_key(spreadsheet_id)
 
-    def _get_or_create_worksheet(self, name: str, headers: list[str]):
-        """指定名のタブを取得。無ければ作成し、ヘッダー行を入れる。"""
+    def _search_serpapi(self, query: str, limit: int) -> list[SearchResult]:
+        """SerpAPI（Google検索）を呼び出す。"""
+        api_key = self.api_keys.get("SERPAPI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("SERPAPI_API_KEY が設定されていません。")
+
+        params = {
+            "engine": "google",
+            "q": query,
+            "num": min(limit, 20),
+            "hl": "ja",
+            "gl": "jp",
+            "api_key": api_key,
+        }
         try:
-            ws = self.spreadsheet.worksheet(name)
-        except gspread.WorksheetNotFound:
-            ws = self.spreadsheet.add_worksheet(
-                title=name, rows=200, cols=max(len(headers), 10)
+            resp = requests.get(
+                "https://serpapi.com/search.json",
+                params=params,
+                timeout=self.timeout,
             )
-            ws.update([headers], "A1")
-            self.log.info(f"タブ '{name}' を新規作成しました。")
-            return ws
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as e:
+            self.log.warning(f"検索失敗（{query}）: {e}")
+            return []
+        except ValueError as e:
+            self.log.warning(f"検索結果の解析失敗（{query}）: {e}")
+            return []
 
-        # ヘッダーが空なら入れる
-        first_row = ws.row_values(1)
-        if not first_row:
-            ws.update([headers], "A1")
-        return ws
+        if data.get("error"):
+            self.log.warning(f"SerpAPIエラー（{query}）: {data['error']}")
+            return []
 
-    def ensure_tabs(self) -> None:
-        """必要なタブを全て用意する。"""
-        self._get_or_create_worksheet(
-            self.sheet_names.get("prospects_sheet", "Prospects"), PROSPECT_HEADERS)
-        self._get_or_create_worksheet(
-            self.sheet_names.get("run_log_sheet", "Run_Log"), RUN_LOG_HEADERS)
-        self._get_or_create_worksheet(
-            self.sheet_names.get("search_queries_sheet", "Search_Queries"),
-            SEARCH_QUERY_HEADERS)
-        self._get_or_create_worksheet(
-            self.sheet_names.get("exclusions_sheet", "Exclusions"),
-            EXCLUSION_HEADERS)
-
-    def upsert_prospects(self, prospects: list[Prospect]) -> tuple[int, int]:
-        """Prospects タブへ upsert する。
-
-        Returns:
-            (新規追加した件数, 更新した件数)
-        """
-        if not prospects:
-            return 0, 0
-
-        ws = self._get_or_create_worksheet(
-            self.sheet_names.get("prospects_sheet", "Prospects"), PROSPECT_HEADERS)
-
-        existing = ws.get_all_values()
-        header = existing[0] if existing else PROSPECT_HEADERS
-        rows = existing[1:] if len(existing) > 1 else []
-
-        id_col = header.index("prospect_id") if "prospect_id" in header else 0
-        url_col = header.index("website_url") if "website_url" in header else 7
-
-        # 既存行: prospect_id / website_url -> シート上の行番号（1始まり、ヘッダー込み）
-        id_to_row: dict[str, int] = {}
-        url_to_row: dict[str, int] = {}
-        for i, row in enumerate(rows):
-            sheet_row = i + 2  # ヘッダーが1行目
-            if id_col < len(row) and row[id_col]:
-                id_to_row[row[id_col]] = sheet_row
-            if url_col < len(row) and row[url_col]:
-                url_to_row[row[url_col].rstrip("/")] = sheet_row
-
-        added = 0
-        updated = 0
-        to_append: list[list] = []
-
-        for p in prospects:
-            row_values = p.to_row()
-            target_row = id_to_row.get(p.prospect_id)
-            if target_row is None:
-                target_row = url_to_row.get((p.website_url or "").rstrip("/"))
-
-            if target_row is not None:
-                # 既存行を更新
-                last_col = _col_letter(len(PROSPECT_HEADERS))
-                ws.update([row_values], f"A{target_row}:{last_col}{target_row}")
-                updated += 1
-            else:
-                to_append.append(row_values)
-                added += 1
-
-        if to_append:
-            ws.append_rows(to_append, value_input_option="USER_ENTERED")
-
-        return added, updated
-
-    def append_run_log(self, stats: RunStats) -> None:
-        """Run_Log タブへ実行サマリを追記する。"""
-        ws = self._get_or_create_worksheet(
-            self.sheet_names.get("run_log_sheet", "Run_Log"), RUN_LOG_HEADERS)
-        ws.append_row(stats.to_row(), value_input_option="USER_ENTERED")
-
-    def append_search_queries(self, query_log: list[dict]) -> None:
-        """Search_Queries タブへ使用したクエリを追記する。"""
-        if not query_log:
-            return
-        ws = self._get_or_create_worksheet(
-            self.sheet_names.get("search_queries_sheet", "Search_Queries"),
-            SEARCH_QUERY_HEADERS)
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        rows = [
-            [now, q.get("industry_group", ""), q.get("sub_industry", ""),
-             q.get("prefecture", ""), q.get("query", ""), q.get("result_count", 0)]
-            for q in query_log
-        ]
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
-
-    def append_exclusions(self, exclusions: list[tuple]) -> None:
-        """Exclusions タブへ除外したURLと理由を追記する。"""
-        if not exclusions:
-            return
-        ws = self._get_or_create_worksheet(
-            self.sheet_names.get("exclusions_sheet", "Exclusions"),
-            EXCLUSION_HEADERS)
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        rows = [[now, url, reason] for url, reason in exclusions]
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
-
-    def write_config_snapshot(self, config_rows: list[tuple]) -> None:
-        """Config タブへ現在の設定値の控えを書き込む。"""
-        name = self.sheet_names.get("config_sheet", "Config")
-        ws = self._get_or_create_worksheet(name, ["key", "value"])
-        ws.clear()
-        ws.update([["key", "value"]] + [list(r) for r in config_rows], "A1")
+        results: list[SearchResult] = []
+        for item in data.get("organic_results", [])[:limit]:
+            url = item.get("link", "")
+            if not url:
+                continue
+            results.append(SearchResult(
+                title=item.get("title", ""),
+                url=url,
+                snippet=item.get("snippet", ""),
+                query=query,
+            ))
+        return results
 
 
-def _col_letter(n: int) -> str:
-    """1始まりの列番号をスプレッドシートの列記号（A, B, ... AA）に変換する。"""
-    result = ""
-    while n > 0:
-        n, rem = divmod(n - 1, 26)
-        result = chr(65 + rem) + result
-    return result
+def search_all(
+    client: SearchClient,
+    queries: list[dict],
+    limit_per_query: int,
+    max_total: int,
+    sleep_seconds: float = 1.0,
+) -> tuple[list[SearchResult], list[dict]]:
+    """全クエリを順に実行して結果を集める。
+
+    Returns:
+        (検索結果のリスト, クエリ実行ログ [{...query, result_count}])
+    """
+    log = get_logger()
+    all_results: list[SearchResult] = []
+    query_log: list[dict] = []
+
+    for q in queries:
+        if len(all_results) >= max_total:
+            log.info(f"取得上限 {max_total} 件に達したため検索を打ち切ります。")
+            break
+        hits = client.search(q["query"], limit_per_query)
+        for r in hits:
+            r.industry_group = q["industry_group"]
+            r.sub_industry = q["sub_industry"]
+        all_results.extend(hits)
+        query_log.append({**q, "result_count": len(hits)})
+        log.info(f"検索: {q['query']} -> {len(hits)} 件")
+        time.sleep(sleep_seconds)
+
+    return all_results[:max_total], query_log
+
+
+def load_from_csv(csv_path: str) -> list[SearchResult]:
+    """手元の企業リストCSVを検索結果の代わりに読み込む。
+
+    CSVは少なくとも 'url' 列を持つこと。'company_name'（または 'name'）、
+    'industry_group'、'sub_industry' 列があれば利用する。
+    """
+    path = Path(csv_path)
+    if not path.exists():
+        raise FileNotFoundError(f"入力CSVが見つかりません: {csv_path}")
+
+    results: list[SearchResult] = []
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError("入力CSVにヘッダー行がありません。")
+        lower_map = {name.lower().strip(): name for name in reader.fieldnames}
+
+        if "url" not in lower_map:
+            raise ValueError(
+                "入力CSVに 'url' 列が必要です。"
+                f"見つかった列: {reader.fieldnames}"
+            )
+
+        for row in reader:
+            url = (row.get(lower_map["url"], "") or "").strip()
+            if not url:
+                continue
+            name = ""
+            for key in ("company_name", "name", "会社名"):
+                if key in lower_map:
+                    name = (row.get(lower_map[key], "") or "").strip()
+                    if name:
+                        break
+            results.append(SearchResult(
+                title=name,
+                url=url,
+                snippet="",
+                industry_group=(row.get(lower_map.get("industry_group", ""), "") or "").strip(),
+                sub_industry=(row.get(lower_map.get("sub_industry", ""), "") or "").strip(),
+                query="(CSV入力)",
+            ))
+    return results
