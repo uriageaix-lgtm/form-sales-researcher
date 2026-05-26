@@ -37,11 +37,10 @@ def _with_retry(func, *args, max_retries: int = 4, **kwargs):
         try:
             return func(*args, **kwargs)
         except gspread.exceptions.APIError as e:
-            # 429（上限超過）のときだけリトライ。それ以外はそのまま投げる。
             is_quota = "429" in str(e) or "Quota exceeded" in str(e)
             if not is_quota or attempt == max_retries - 1:
                 raise
-            wait = 30 * (attempt + 1)  # 30秒, 60秒, 90秒 と延ばす
+            wait = 30 * (attempt + 1)
             log.warning(f"スプレッドシートの書き込み上限に達しました。"
                         f"{wait}秒待って再試行します（{attempt + 1}回目）。")
             time.sleep(wait)
@@ -74,7 +73,6 @@ class SheetsClient:
             self.log.info(f"タブ '{name}' を新規作成しました。")
             return ws
 
-        # ヘッダーが空なら入れる
         first_row = ws.row_values(1)
         if not first_row:
             ws.update([headers], "A1")
@@ -112,11 +110,10 @@ class SheetsClient:
         id_col = header.index("prospect_id") if "prospect_id" in header else 0
         url_col = header.index("website_url") if "website_url" in header else 7
 
-        # 既存行: prospect_id / website_url -> シート上の行番号（1始まり、ヘッダー込み）
         id_to_row: dict[str, int] = {}
         url_to_row: dict[str, int] = {}
         for i, row in enumerate(rows):
-            sheet_row = i + 2  # ヘッダーが1行目
+            sheet_row = i + 2
             if id_col < len(row) and row[id_col]:
                 id_to_row[row[id_col]] = sheet_row
             if url_col < len(row) and row[url_col]:
@@ -125,7 +122,7 @@ class SheetsClient:
         added = 0
         updated = 0
         to_append: list[list] = []
-        to_update: list[dict] = []  # batch_update 用：まとめて1回で更新する
+        to_update: list[dict] = []
 
         last_col = _col_letter(len(PROSPECT_HEADERS))
         for p in prospects:
@@ -135,7 +132,6 @@ class SheetsClient:
                 target_row = url_to_row.get((p.website_url or "").rstrip("/"))
 
             if target_row is not None:
-                # 既存行を更新（1件ずつ送らず、まとめて batch_update する）
                 to_update.append({
                     "range": f"A{target_row}:{last_col}{target_row}",
                     "values": [row_values],
@@ -145,14 +141,10 @@ class SheetsClient:
                 to_append.append(row_values)
                 added += 1
 
-        # 既存行の更新：何件あっても batch_update で1回の通信にまとめる。
-        # これにより Google Sheets の「1分あたりの書き込み回数」上限を回避する。
-        # 万一それでも上限に当たった場合は、待って再試行する。
         if to_update:
             _with_retry(ws.batch_update, to_update,
                         value_input_option="USER_ENTERED")
 
-        # 新規行の追加：append_rows はもともと1回の通信でまとめて追加される。
         if to_append:
             _with_retry(ws.append_rows, to_append,
                         value_input_option="USER_ENTERED")
