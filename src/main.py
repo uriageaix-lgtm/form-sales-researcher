@@ -19,7 +19,8 @@ from pathlib import Path
 from .config import load_config, validate_for_run
 from .crawler import Crawler
 from .dedupe import (
-    dedupe_search_results, is_excluded_domain, make_prospect_id, normalize_domain,
+    dedupe_search_results, is_excluded_domain, is_non_business,
+    make_prospect_id, normalize_domain,
 )
 from .extractor import extract
 from .logging_utils import setup_logger
@@ -108,13 +109,18 @@ def run(args: argparse.Namespace) -> int:
     stats.queries_used = len(query_log)
     stats.search_hits = len(results)
 
-    # ---- 2. 除外ドメインの除去 ＋ 重複排除 ----
+    # ---- 2. 除外ドメインの除去 ＋ 役所・団体の除去 ＋ 重複排除 ----
     filtered = []
     for r in results:
         if is_excluded_domain(r.url, config.excluded_domains):
             stats.excluded.append((r.url, "除外ドメイン（ポータル・求人・SNS等）"))
-        else:
-            filtered.append(r)
+            continue
+        # 役所・公的機関・業界団体を除外（会社名とURLで判定）
+        is_non_biz, reason = is_non_business(r.title, r.url)
+        if is_non_biz:
+            stats.excluded.append((r.url, reason))
+            continue
+        filtered.append(r)
     deduped, dropped = dedupe_search_results(filtered)
     stats.excluded.extend(dropped)
     stats.after_dedupe = len(deduped)
@@ -189,7 +195,31 @@ def run(args: argparse.Namespace) -> int:
             stats.errors += 1
             log.warning(f"  調査中にエラー: {e}")
 
+        # クロールで判明した正式な会社名でも、役所・団体を再判定する。
+        # 検索結果のタイトルでは見抜けなかったものをここで除外マークする。
+        is_non_biz, reason = is_non_business(prospect.company_name,
+                                             prospect.website_url)
+        if is_non_biz:
+            prospect.crawl_status = CrawlStatus.SKIPPED
+            prospect.notes = f"営業対象外（{reason}）"
+            prospect.error_message = reason
+
         prospects.append(prospect)
+
+    # ---- 3.4 役所・公的機関・業界団体をリストから完全に除外 ----
+    # クロール後の判定でマークされたもの（notes が「営業対象外（」で始まる）を
+    # 営業リストから外し、除外タブに記録する。
+    kept_after_org = []
+    for p in prospects:
+        if p.notes.startswith("営業対象外（"):
+            stats.excluded.append((p.website_url, p.error_message or "役所・団体"))
+        else:
+            kept_after_org.append(p)
+    removed_org = len(prospects) - len(kept_after_org)
+    prospects = kept_after_org
+    if removed_org:
+        log.info(f"役所・公的機関・業界団体の除外: {removed_org} 件を"
+                 f"営業リストから除外しました")
 
     # ---- 3.5 都道府県による絞り込み ----
     # config の filter_by_prefecture が true のとき、サイトから読み取った所在地が
