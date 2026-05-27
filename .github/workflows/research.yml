@@ -11,7 +11,7 @@ on:
   # GitHub Actions の時刻は UTC（世界標準時）。日本時間より9時間遅い。
   # 下の "0 0 * * *" は UTC 0時 = 日本時間 朝9時 を意味する。
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "10 8 * * *"
   # 手動でも実行できるようにする（GitHubの画面のボタンから動かせる）
   workflow_dispatch:
 
