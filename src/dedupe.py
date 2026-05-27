@@ -111,3 +111,52 @@ def dedupe_search_results(results: list) -> tuple[list, list]:
         kept.append(r)
 
     return kept, dropped
+
+
+# 役所・公的機関・業界団体を示すキーワード（営業先にならないため除外する）
+NON_BUSINESS_KEYWORDS = [
+    # 自治体・役所
+    "市役所", "区役所", "町役場", "村役場", "県庁", "都庁", "道庁", "府庁",
+    "水道局", "下水道", "教育委員会", "保健所", "保健センター", "消防署",
+    "消防局", "警察署", "図書館", "公民館", "市議会", "県議会",
+    "地方公共団体", "自治体", "出張所", "支所",
+    # 公的機関・独立行政法人など
+    "独立行政法人", "公社", "事業団", "公団", "公庫", "機構",
+    "ハローワーク", "職業安定所", "年金事務所", "税務署", "法務局",
+    # 業界団体・協同組合
+    "協会", "協議会", "組合", "連合会", "連合", "商工会", "商工会議所",
+    "振興会", "振興協会", "事業協同組合", "農業協同組合", "農協",
+    "漁業協同組合", "漁協", "生活協同組合", "生協", "共済", "財団法人",
+    "社団法人", "公益財団", "公益社団", "一般財団", "一般社団",
+    "学会", "研究会連合",
+]
+
+# 役所・公的機関でよく使われるドメイン末尾
+NON_BUSINESS_DOMAIN_SUFFIXES = [
+    ".go.jp",    # 国の機関
+    ".lg.jp",    # 地方自治体
+    ".ed.jp",    # 教育機関
+    ".ac.jp",    # 大学など
+]
+
+
+def is_non_business(name: str, url: str) -> tuple[bool, str]:
+    """役所・公的機関・業界団体かどうかを判定する。
+
+    会社名（検索結果のタイトル）とURLの両方から判定する。
+    営業先として不適切なものを True で返す。
+
+    Returns:
+        (除外すべきか, 理由)
+    """
+    text = (name or "")
+    # ドメイン末尾で判定（.go.jp / .lg.jp など）
+    domain = normalize_domain(url)
+    for suffix in NON_BUSINESS_DOMAIN_SUFFIXES:
+        if domain.endswith(suffix):
+            return True, f"役所・公的機関（{suffix}ドメイン）"
+    # 名前に含まれるキーワードで判定
+    for keyword in NON_BUSINESS_KEYWORDS:
+        if keyword in text:
+            return True, f"役所・団体（「{keyword}」を含む）"
+    return False, ""
