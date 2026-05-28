@@ -4,8 +4,10 @@
 targets:
   # 検索対象の都道府県
   prefectures:
-    - 青森県
-
+    - 東京都
+    - 神奈川県
+    - 埼玉県
+    - 千葉県
   # 検索対象の業種（建設設備工事 / リフォーム / 工務店 / 卸売業）
   industries:
     - 建設設備工事
@@ -20,6 +22,22 @@ targets:
   # true なら、他県の企業は対象外として除外タブに記録される。
   # 所在地が読み取れない企業は notes に印を付けて残す。
   filter_by_prefecture: true
+
+  # 都道府県を日付で自動切り替えするか。
+  # true にすると、上の prefectures の指定は無視され、
+  # 下の rotation_prefectures をもとに「今日の県」が自動で選ばれる。
+  # 北海道→青森県→…と1日ずつ進み、最後まで行くと先頭に戻る。
+  rotate_prefectures: true
+
+  # ローテーションの対象。
+  #   "all"          … 47都道府県すべてを巡回する
+  #   [県名のリスト]  … 指定した県だけを巡回する
+  rotation_prefectures: "all"
+  # 特定の県だけ巡回したい場合は、上の行を消して下のように書く:
+  # rotation_prefectures:
+  #   - 北海道
+  #   - 青森県
+  #   - 岩手県
 
 search:
   # 検索プロバイダ（.env の SEARCH_PROVIDER が優先される）
