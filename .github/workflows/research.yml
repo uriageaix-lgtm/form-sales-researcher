@@ -7,12 +7,18 @@ name: フォーム営業リサーチ
 
 # いつ動かすか
 on:
-  # スケジュール実行（cron 形式）
-  # GitHub Actions の時刻は UTC（世界標準時）。日本時間より9時間遅い。
-  # 下の "0 0 * * *" は UTC 0時 = 日本時間 朝9時 を意味する。
+  # 【メインの起動方法】外部サービス（Make など）からの信号で起動する。
+  # Make が毎日決まった時刻にこの信号を送ることで、1日1回自動実行される。
+  repository_dispatch:
+    types: [run-research]
+
+  # 【予備】GitHub 自身のスケジュール実行。
+  # ※ GitHub のスケジュールは時刻が不正確で動かないこともあるため、
+  #   メインは上の repository_dispatch（Make）に任せ、これは予備とする。
   schedule:
-    - cron: "30 8 * * *"
-  # 手動でも実行できるようにする（GitHubの画面のボタンから動かせる）
+    - cron: "0 0 * * *"
+
+  # 【手動】GitHub の画面のボタンからいつでも実行できる。
   workflow_dispatch:
 
 jobs:
