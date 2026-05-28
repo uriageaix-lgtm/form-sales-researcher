@@ -91,6 +91,20 @@ class Config:
         """サイトの所在地が指定した都道府県と一致する企業だけを残すか。"""
         return bool(self.raw.get("targets", {}).get("filter_by_prefecture", True))
 
+    @property
+    def rotate_prefectures(self) -> bool:
+        """都道府県を日付で自動切り替えするか。
+
+        true のとき、prefectures の指定は無視され、
+        rotation_prefectures をもとに「今日の県」が自動で選ばれる。
+        """
+        return bool(self.raw.get("targets", {}).get("rotate_prefectures", False))
+
+    @property
+    def rotation_prefectures(self):
+        """ローテーション対象。"all" または都道府県名のリスト。"""
+        return self.raw.get("targets", {}).get("rotation_prefectures", "all")
+
     # ---- output ----
     @property
     def save_local_csv(self) -> bool:
