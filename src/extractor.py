@@ -77,30 +77,80 @@ def _visible_text(soup: BeautifulSoup) -> str:
     return soup.get_text(separator=" ", strip=True)
 
 
+# 会社名として不適切な「ページ見出し」っぽい語（これらは会社名ではない）
+_NOT_A_COMPANY_NAME = [
+    "会社概要", "会社案内", "企業情報", "会社情報", "概要", "about",
+    "ごあいさつ", "ご挨拶", "代表挨拶", "代表者挨拶", "トップページ",
+    "ホーム", "home", "お問い合わせ", "問い合わせ", "contact",
+    "事業内容", "サービス", "service", "アクセス", "採用情報", "採用",
+    "とは", "について", "メニュー", "menu", "申請書ダウンロード",
+    "詳細", "一覧", "プライバシーポリシー",
+]
+
+
+def _looks_like_heading(text: str) -> bool:
+    """その文字列が「会社名」ではなく「ページ見出し」っぽいか判定する。"""
+    if not text:
+        return True
+    t = text.strip()
+    # 完全一致、または「〇〇とは」「〇〇について」のような見出し表現
+    for ng in _NOT_A_COMPANY_NAME:
+        if t == ng or t.endswith(ng):
+            return True
+    return False
+
+
 def _extract_company_name(pages: dict, fallback: str = "") -> str:
-    """会社名を推定する。og:site_name → titleタグ → h1 の順。"""
+    """会社名を推定する。og:site_name → titleタグ → h1 の順。
+
+    「会社概要」「会社案内」などのページ見出しは会社名ではないので採用しない。
+    """
+    candidates: list[str] = []
+
+    # 候補1: og:site_name（最も信頼できる）
     for url, html in pages.items():
         soup = BeautifulSoup(html, "lxml")
         og = soup.find("meta", attrs={"property": "og:site_name"})
         if og and og.get("content"):
-            return og["content"].strip()
+            candidates.append(og["content"].strip())
+            break
+
+    # 候補2: title タグ（区切り文字より前）
     for url, html in pages.items():
         soup = BeautifulSoup(html, "lxml")
         if soup.title and soup.title.string:
             title = soup.title.string.strip()
-            # 区切り文字より前を会社名とみなす
             for sep in ("|", "｜", "-", "‐", "—", "–", "／", "/"):
                 if sep in title:
-                    title = title.split(sep)[0].strip()
+                    # 区切りで分けた各部分のうち、見出しでない最初のものを使う
+                    parts = [pp.strip() for pp in title.replace("｜", "|").split("|")]
+                    parts = [pp for seg in parts for pp in seg.split(sep)]
+                    for part in parts:
+                        if part and not _looks_like_heading(part):
+                            candidates.append(part)
+                            break
                     break
-            if title:
-                return title
+            else:
+                if title:
+                    candidates.append(title)
+            break
+
+    # 候補3: h1
     for url, html in pages.items():
         soup = BeautifulSoup(html, "lxml")
         h1 = soup.find("h1")
         if h1 and h1.get_text(strip=True):
-            return h1.get_text(strip=True)
-    return fallback
+            candidates.append(h1.get_text(strip=True))
+            break
+
+    # 見出しっぽくない最初の候補を会社名とする
+    for c in candidates:
+        if not _looks_like_heading(c):
+            return c
+    # どれも見出しっぽいなら、フォールバック（検索結果のタイトル）を使う
+    if fallback and not _looks_like_heading(fallback):
+        return fallback
+    return candidates[0] if candidates else fallback
 
 
 def _extract_address(text: str) -> tuple[str, str, str]:
