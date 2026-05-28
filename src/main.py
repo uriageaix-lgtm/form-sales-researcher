@@ -59,8 +59,24 @@ def run(args: argparse.Namespace) -> int:
 
     # CLI引数で config を上書き
     industries = args.industry or config.industries
-    prefectures = args.prefecture or config.prefectures
     limit_per_query = args.limit or config.limit_per_query
+
+    # 都道府県を決める。優先順位は次のとおり:
+    #   1. CLI引数 --prefecture（指定があればそれを使う）
+    #   2. ローテーション設定（rotate_prefectures が true なら今日の県を自動選択）
+    #   3. config.yaml の prefectures（固定リスト）
+    if args.prefecture:
+        prefectures = args.prefecture
+    elif config.rotate_prefectures:
+        from .rotation import pick_prefecture_for_today, resolve_rotation_list
+        rotation_list = resolve_rotation_list(config.rotation_prefectures)
+        today_pref = pick_prefecture_for_today(rotation_list)
+        prefectures = [today_pref]
+        log.info(f"都道府県の自動切り替えが有効です。"
+                 f"本日の対象: {today_pref}"
+                 f"（巡回対象 {len(rotation_list)} 県）")
+    else:
+        prefectures = config.prefectures
 
     log.info("=" * 60)
     log.info("フォーム営業リサーチを開始します。")
