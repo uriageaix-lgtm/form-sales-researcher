@@ -134,9 +134,27 @@ NON_BUSINESS_KEYWORDS = [
 # 役所・公的機関でよく使われるドメイン末尾
 NON_BUSINESS_DOMAIN_SUFFIXES = [
     ".go.jp",    # 国の機関
-    ".lg.jp",    # 地方自治体
+    ".lg.jp",    # 地方自治体（新しい形式）
     ".ed.jp",    # 教育機関
     ".ac.jp",    # 大学など
+]
+
+# 自治体でよく使われる古い形式のドメイン断片（例: www.city.aomori.aomori.jp）
+NON_BUSINESS_DOMAIN_PARTS = [
+    ".city.",   # 市
+    ".pref.",   # 都道府県
+    ".town.",   # 町
+    ".vill.",   # 村
+    ".metro.",  # 東京都など
+]
+
+# 役所・公的サービスでよく使われるドメイン（入札・電子申請など）
+NON_BUSINESS_DOMAINS = [
+    "e-tumo.jp",        # 電子申請システム（自治体）
+    "nsearch.jp",       # 入札情報サイト
+    "kensetumap.com",   # 建設業者まとめサイト
+    "njss.info",        # 入札情報サービス
+    "kensetsu-database.com",
 ]
 
 
@@ -150,13 +168,31 @@ def is_non_business(name: str, url: str) -> tuple[bool, str]:
         (除外すべきか, 理由)
     """
     text = (name or "")
-    # ドメイン末尾で判定（.go.jp / .lg.jp など）
     domain = normalize_domain(url)
+
+    # ドメイン末尾で判定（.go.jp / .lg.jp など）
     for suffix in NON_BUSINESS_DOMAIN_SUFFIXES:
         if domain.endswith(suffix):
             return True, f"役所・公的機関（{suffix}ドメイン）"
+
+    # 自治体の古い形式ドメイン（city. / pref. などを含む）
+    for part in NON_BUSINESS_DOMAIN_PARTS:
+        if part in ("." + domain):
+            return True, f"役所・自治体（{part.strip('.')}ドメイン）"
+
+    # 入札・電子申請・まとめサイトなど（営業先にならない）
+    for d in NON_BUSINESS_DOMAINS:
+        if domain == d or domain.endswith("." + d):
+            return True, f"入札・ポータル等（{d}）"
+
     # 名前に含まれるキーワードで判定
     for keyword in NON_BUSINESS_KEYWORDS:
         if keyword in text:
             return True, f"役所・団体（「{keyword}」を含む）"
+
+    # 会社名が「〇〇市／区／町／村」だけの自治体名（例: 青森市）
+    import re as _re
+    if _re.fullmatch(r"[\u4e00-\u9fff]{1,8}[市区町村]", text.strip()):
+        return True, f"自治体名（「{text.strip()}」）"
+
     return False, ""
